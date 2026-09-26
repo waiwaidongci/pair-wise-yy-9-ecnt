@@ -3,6 +3,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as intake from "./desk/intake.js";
+import * as decision from "./desk/decision.js";
+import * as archive from "./desk/archive.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dbPath = join(__dirname, "data", "cyanotype-negative-room.json");
@@ -25,6 +28,31 @@ const seed = {
           "note": "阴天补时2分钟"
         }
       ]
+    }
+  ],
+  "copyGrants": [
+    {
+      "id": "CG-SEED-1",
+      "negativeCode": "CN-001",
+      "customer": "省美术馆",
+      "purpose": "馆藏图录出版",
+      "size": "18x24cm",
+      "deadline": "2026-10-15",
+      "handler": "周明",
+      "box": "蓝盒A-03",
+      "status": "待复制",
+      "rejectReason": "",
+      "reviews": [],
+      "history": [
+        {
+          "at": "2026-09-20T02:00:00.000Z",
+          "action": "登记",
+          "note": "登记用途「馆藏图录出版」，期限至 2026-10-15",
+          "by": "周明"
+        }
+      ],
+      "createdAt": "2026-09-20T02:00:00.000Z",
+      "updatedAt": "2026-09-20T02:00:00.000Z"
     }
   ]
 };
@@ -86,12 +114,17 @@ function page() {
     .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:12px; } .card { display:grid; gap:8px; }
     .meta { color:var(--muted); font-size:13px; } .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 8px; font-size:12px; }
     .logs { border-top:1px solid var(--line); padding-top:8px; max-height:90px; overflow:auto; } .warn { color:var(--warn); font-weight:700; }
+    .tabs { display:flex; gap:8px; align-items:center; } .tabs button { background:#dfe6da; color:var(--ink); } .tabs button.active { background:var(--accent); color:#fff; }
+    .checks { display:flex; gap:14px; flex-wrap:wrap; margin:8px 0; } .checks label { display:flex; gap:6px; align-items:center; margin:0; color:var(--ink); font-size:13px; } .checks input { width:auto; }
+    .inline { border:1px dashed var(--line); border-radius:6px; padding:10px; display:grid; gap:4px; background:#fafbf8; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; } .actions button { padding:7px 11px; font-size:13px; }
+    .badge { display:inline-block; border-radius:999px; padding:3px 8px; font-size:12px; background:#e7efe1; color:var(--accent); font-weight:700; }
     @media (max-width:900px){ header{display:block;padding:18px 16px;} main{grid-template-columns:1fr;padding:16px;} }
   </style>
 </head>
 <body>
-  <header><div><h1>古法蓝晒底片整理室</h1><div class="meta">底片任务、工艺步骤、缺陷和入盒交付</div></div><button id="reload">刷新</button></header>
-  <main>
+  <header><div><h1>古法蓝晒底片整理室</h1><div class="meta">底片任务、工艺步骤、缺陷和入盒交付 · 复制授权台</div></div><div class="tabs"><button id="tabItems" class="active">底片整理</button><button id="tabDesk">复制授权台</button><button id="reload">刷新</button></div></header>
+  <main id="itemsMain">
     <section>
       <form id="createForm"><h2>新增底片</h2><div id="fields"></div><label>初始状态</label><select name="status">${stages.map(s => '<option>'+s+'</option>').join('')}</select><button>保存底片</button></form>
       <form id="actionForm" style="margin-top:14px"><h2>记录工艺步骤</h2><label>选择底片</label><select name="id" id="itemSelect"></select><div id="extraFields"></div><button>提交记录</button></form>
@@ -100,6 +133,26 @@ function page() {
       <div class="stats" id="stats"></div>
       <div class="toolbar"><select id="statusFilter"><option value="">全部状态</option>${stages.map(s => '<option>'+s+'</option>').join('')}</select><input id="search" placeholder="搜索编号或关键词"></div>
       <div class="panel"><h2>创建蓝晒任务后，按涂布、晾干、曝光、冲洗、复晒、入盒记录每一步历史。</h2><div class="grid" id="cards"></div></div>
+    </section>
+  </main>
+  <main id="deskMain" hidden>
+    <section>
+      <form id="grantForm"><h2>登记复制授权</h2>
+        <label>底片编号</label><select name="negativeCode" id="grantNegative"></select>
+        <label>复制客户</label><input name="customer" required placeholder="取片的复制客户">
+        <label>用途</label><input name="purpose" required placeholder="展览 / 出版 / 研究…">
+        <label>复制尺寸</label><input name="size" required placeholder="如 18x24cm">
+        <label>期限</label><input name="deadline" type="date" required>
+        <label>经办人</label><input name="handler" required>
+        <label>存放盒位</label><input name="box" placeholder="留空取底片当前盒位">
+        <button>提交登记</button>
+        <div class="meta">同一底片只留一条未完成授权；过期或已排给别家即拒绝；复制件不出馆。</div>
+      </form>
+    </section>
+    <section>
+      <div class="stats" id="grantStats"></div>
+      <div class="toolbar"><select id="grantStatusFilter"></select><input id="grantSearch" placeholder="搜索客户 / 用途 / 盒位"></div>
+      <div class="panel"><h2>授权台账</h2><div class="grid" id="grantCards"></div></div>
     </section>
   </main>
   <script>
@@ -142,7 +195,117 @@ function page() {
     async function load() { items = await api('/api/items'); render(); }
     createForm.onsubmit = async event => { event.preventDefault(); await api('/api/items', { method:'POST', body: JSON.stringify(Object.fromEntries(new FormData(createForm).entries())) }); createForm.reset(); await load(); };
     actionForm.onsubmit = async event => { event.preventDefault(); await api('/api/items/'+itemSelect.value+'/action', { method:'POST', body: JSON.stringify(Object.fromEntries(new FormData(actionForm).entries())) }); actionForm.reset(); await load(); };
-    document.querySelector('#statusFilter').onchange = render; document.querySelector('#search').oninput = render; document.querySelector('#reload').onclick = load;
+    document.querySelector('#statusFilter').onchange = render; document.querySelector('#search').oninput = render; document.querySelector('#reload').onclick = () => { load(); if (!deskMain.hidden) loadGrants(); };
+    // ===== 复制授权台 =====
+    const GRANT_STATUSES = ['待复制','待复验','已归档','已撤回','已拒绝'];
+    const deskMain = document.querySelector('#deskMain');
+    const itemsMain = document.querySelector('#itemsMain');
+    const tabItems = document.querySelector('#tabItems');
+    const tabDesk = document.querySelector('#tabDesk');
+    const grantForm = document.querySelector('#grantForm');
+    const grantNegative = document.querySelector('#grantNegative');
+    const grantCards = document.querySelector('#grantCards');
+    const grantStats = document.querySelector('#grantStats');
+    const grantStatusFilter = document.querySelector('#grantStatusFilter');
+    const grantSearch = document.querySelector('#grantSearch');
+    let grants = [];
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    function showTab(which) {
+      itemsMain.hidden = which !== 'items';
+      deskMain.hidden = which !== 'desk';
+      tabItems.classList.toggle('active', which === 'items');
+      tabDesk.classList.toggle('active', which === 'desk');
+      if (which === 'desk') loadGrants();
+    }
+    tabItems.onclick = () => showTab('items');
+    tabDesk.onclick = () => showTab('desk');
+    async function loadGrants() {
+      grants = await api('/api/copy-grants');
+      renderGrantOptions();
+      renderGrants();
+    }
+    function renderGrantOptions() {
+      grantNegative.innerHTML = items.map(i => '<option value="'+esc(i.code)+'">'+esc(i.code)+' · '+esc(i.plateSize || '')+'</option>').join('');
+      prefillSize();
+    }
+    function prefillSize() {
+      const neg = items.find(i => i.code === grantNegative.value);
+      if (neg && !grantForm.size.value) grantForm.size.value = neg.plateSize || '';
+    }
+    grantNegative.onchange = prefillSize;
+    function renderGrantStats() {
+      grantStats.innerHTML = GRANT_STATUSES.map(s => '<div class="stat"><span>'+s+'</span><strong>'+grants.filter(g => g.status === s).length+'</strong></div>').join('');
+    }
+    function renderGrants() {
+      renderGrantStats();
+      const status = grantStatusFilter.value;
+      const q = grantSearch.value.trim();
+      const visible = grants.filter(g => (!status || g.status === status) && (!q || [g.negativeCode, g.customer, g.purpose, g.handler, g.box, g.size].join(' ').includes(q)));
+      grantCards.innerHTML = visible.map(grantCardHtml).join('') || '<div class="meta">暂无授权记录</div>';
+    }
+    function grantCardHtml(g) {
+      const open = g.status === '待复制' || g.status === '待复验';
+      const head = '<h3>'+esc(g.negativeCode)+' · '+esc(g.id)+'</h3><span class="pill">'+esc(g.status)+'</span>'
+        + (g.expired && open ? '<span class="warn">已过期</span>' : '')
+        + (g.status === '已归档' ? '<span class="badge">复制件留存馆内 · 不出馆</span>' : '');
+      const info = '<div><b>客户</b> '+esc(g.customer)+'</div><div><b>用途</b> '+esc(g.purpose)+'</div>'
+        + '<div><b>尺寸</b> '+esc(g.size)+' · <b>盒位</b> '+esc(g.box)+'</div>'
+        + '<div><b>期限</b> '+esc(g.deadline)+' · <b>经办人</b> '+esc(g.handler)+'</div>';
+      const rejected = g.status === '已拒绝' && g.rejectReason ? '<div class="warn">拒绝：'+esc(g.rejectReason)+'</div>' : '';
+      const lastReview = (g.reviews || []).slice(-1)[0];
+      const reviewLine = lastReview
+        ? '<div class="meta">最近复核：'+esc(lastReview.verifier)+' · '+(lastReview.passed ? '通过' : '未过（'+esc((lastReview.problems || []).join('、'))+'）')+' · '+esc(String(lastReview.at).slice(0,10))+'</div>'
+        : '';
+      const hist = (g.history || []).slice(-3).map(h => '<div>'+esc(h.action)+'：'+esc(h.note)+'</div>').join('');
+      const actions = open
+        ? '<div class="actions"><button data-act="review" data-id="'+esc(g.id)+'">复核</button><button class="secondary" data-act="amend" data-id="'+esc(g.id)+'">修正</button><button class="secondary" data-act="withdraw" data-id="'+esc(g.id)+'">撤回</button></div>'
+        : '';
+      const reviewForm = open
+        ? '<form class="inline" data-form="review" data-id="'+esc(g.id)+'" hidden><b>复核（须另一人核对）</b><label>复核人</label><input name="verifier" required placeholder="不能是经办人 '+esc(g.handler)+'"><label>复制人</label><input name="copiedBy" placeholder="留空视为经办人"><div class="checks"><label><input type="checkbox" name="sampleOk" checked>样片已收</label><label><input type="checkbox" name="sizeOk" checked>尺寸一致</label><label><input type="checkbox" name="boxOk" checked>盒位一致</label></div><label>备注</label><input name="note"><button>提交复核</button></form>'
+        : '';
+      const amendForm = open
+        ? '<form class="inline" data-form="amend" data-id="'+esc(g.id)+'" hidden><b>修正（旧授权与结论退回重算）</b><label>用途</label><input name="purpose" value="'+esc(g.purpose)+'"><label>期限</label><input name="deadline" type="date" value="'+esc(g.deadline)+'"><label>尺寸</label><input name="size" value="'+esc(g.size)+'"><label>盒位</label><input name="box" value="'+esc(g.box)+'"><label>修正经办人</label><input name="by" required><button>提交修正</button></form>'
+        : '';
+      const withdrawForm = open
+        ? '<form class="inline" data-form="withdraw" data-id="'+esc(g.id)+'" hidden><b>撤回授权</b><label>经办人</label><input name="by" required><label>原因</label><input name="reason"><button>确认撤回</button></form>'
+        : '';
+      return '<article class="card">'+head+info+rejected+reviewLine+actions+reviewForm+amendForm+withdrawForm+'<div class="logs meta">'+(hist || '暂无记录')+'</div></article>';
+    }
+    grantCards.onclick = event => {
+      const btn = event.target.closest('button[data-act]');
+      if (!btn) return;
+      const card = btn.closest('.card');
+      card.querySelectorAll('form.inline').forEach(f => { f.hidden = f.dataset.form !== btn.dataset.act || !f.hidden; });
+    };
+    grantCards.onsubmit = async event => {
+      const form = event.target.closest('form.inline');
+      if (!form) return;
+      event.preventDefault();
+      const id = form.dataset.id;
+      const data = Object.fromEntries(new FormData(form).entries());
+      try {
+        if (form.dataset.form === 'review') {
+          data.sampleOk = form.sampleOk.checked; data.sizeOk = form.sizeOk.checked; data.boxOk = form.boxOk.checked;
+          await api('/api/copy-grants/'+id+'/review', { method:'POST', body: JSON.stringify(data) });
+        } else if (form.dataset.form === 'amend') {
+          await api('/api/copy-grants/'+id, { method:'PATCH', body: JSON.stringify(data) });
+        } else if (form.dataset.form === 'withdraw') {
+          await api('/api/copy-grants/'+id+'/withdraw', { method:'POST', body: JSON.stringify(data) });
+        }
+        await loadGrants();
+      } catch (err) { alert(err.message); }
+    };
+    grantForm.onsubmit = async event => {
+      event.preventDefault();
+      try {
+        await api('/api/copy-grants', { method:'POST', body: JSON.stringify(Object.fromEntries(new FormData(grantForm).entries())) });
+        grantForm.reset();
+        await loadGrants();
+      } catch (err) { alert(err.message); }
+    };
+    grantStatusFilter.innerHTML = '<option value="">全部状态</option>' + GRANT_STATUSES.map(s => '<option>'+s+'</option>').join('');
+    grantStatusFilter.onchange = renderGrants;
+    grantSearch.oninput = renderGrants;
     renderForms(); load();
   </script>
 </body>
@@ -155,6 +318,86 @@ const server = http.createServer(async (req, res) => {
     const db = await loadDb();
     if (req.method === "GET" && url.pathname === "/") return html(res, page());
     if (req.method === "GET" && url.pathname === "/api/items") return send(res, 200, db.items.map(summarize));
+    // ===== 复制授权台（入口 desk/intake.js · 判定 desk/decision.js · 存档 desk/archive.js）=====
+    if (req.method === "GET" && url.pathname === "/api/copy-grants") {
+      const today = intake.todayStr();
+      const rows = archive.listGrants(db, {
+        status: url.searchParams.get("status") || "",
+        negativeCode: url.searchParams.get("negativeCode") || "",
+      });
+      return send(res, 200, rows.map((g) => archive.grantView(g, today)));
+    }
+    if (req.method === "POST" && url.pathname === "/api/copy-grants") {
+      const raw = await body(req);
+      if (intake.takeOutRequested(raw)) {
+        return send(res, 403, { error: "copy_must_stay_in_building", message: "复制件不出馆" });
+      }
+      const negative = db.items.find((x) => x.code === intake.clean(raw.negativeCode));
+      if (!negative) return send(res, 404, { error: "negative_not_found", message: "底片不存在" });
+      const { data, errors } = intake.parseApply(raw, negative.box);
+      if (errors.length) return send(res, 400, { error: "invalid_grant", message: errors.join("；") });
+      const verdict = decision.decideApply(data, archive.ensureGrants(db));
+      const grant = archive.createGrant(db, data, verdict, new Date().toISOString());
+      await saveDb(db);
+      if (!verdict.ok) {
+        return send(res, 409, { error: verdict.code, message: verdict.message, grant: archive.grantView(grant, intake.todayStr()) });
+      }
+      return send(res, 201, archive.grantView(grant, intake.todayStr()));
+    }
+    const grantOne = url.pathname.match(/^\/api\/copy-grants\/([^/]+)$/);
+    if (grantOne && req.method === "GET") {
+      const grant = archive.findGrant(db, grantOne[1]);
+      if (!grant) return send(res, 404, { error: "grant_not_found", message: "授权不存在" });
+      return send(res, 200, archive.grantView(grant, intake.todayStr()));
+    }
+    if (grantOne && req.method === "PATCH") {
+      const raw = await body(req);
+      if (intake.takeOutRequested(raw)) {
+        return send(res, 403, { error: "copy_must_stay_in_building", message: "复制件不出馆" });
+      }
+      const grant = archive.findGrant(db, grantOne[1]);
+      if (!grant) return send(res, 404, { error: "grant_not_found", message: "授权不存在" });
+      const { patch, by, errors } = intake.parseAmend(raw);
+      if (errors.length) return send(res, 400, { error: "invalid_amend", message: errors.join("；") });
+      const verdict = decision.decideAmend(grant, patch);
+      if (!verdict.ok) return send(res, 409, { error: verdict.code, message: verdict.message });
+      archive.applyAmend(db, grant, verdict.patch, by, new Date().toISOString());
+      await saveDb(db);
+      return send(res, 200, archive.grantView(grant, intake.todayStr()));
+    }
+    const grantReview = url.pathname.match(/^\/api\/copy-grants\/([^/]+)\/review$/);
+    if (grantReview && req.method === "POST") {
+      const raw = await body(req);
+      if (intake.takeOutRequested(raw)) {
+        return send(res, 403, { error: "copy_must_stay_in_building", message: "复制件不出馆" });
+      }
+      const grant = archive.findGrant(db, grantReview[1]);
+      if (!grant) return send(res, 404, { error: "grant_not_found", message: "授权不存在" });
+      const { data, errors } = intake.parseReview(raw);
+      if (errors.length) return send(res, 400, { error: "invalid_review", message: errors.join("；") });
+      const verdict = decision.decideReview(grant, data);
+      if (!verdict.ok) return send(res, 409, { error: verdict.code, message: verdict.message });
+      archive.applyReview(db, grant, data, verdict, new Date().toISOString());
+      await saveDb(db);
+      return send(res, 200, archive.grantView(grant, intake.todayStr()));
+    }
+    const grantWithdraw = url.pathname.match(/^\/api\/copy-grants\/([^/]+)\/withdraw$/);
+    if (grantWithdraw && req.method === "POST") {
+      const grant = archive.findGrant(db, grantWithdraw[1]);
+      if (!grant) return send(res, 404, { error: "grant_not_found", message: "授权不存在" });
+      const { data, errors } = intake.parseWithdraw(await body(req));
+      if (errors.length) return send(res, 400, { error: "invalid_withdraw", message: errors.join("；") });
+      const verdict = decision.decideWithdraw(grant);
+      if (!verdict.ok) return send(res, 409, { error: verdict.code, message: verdict.message });
+      archive.applyWithdraw(db, grant, data.by, data.reason, new Date().toISOString());
+      await saveDb(db);
+      return send(res, 200, archive.grantView(grant, intake.todayStr()));
+    }
+    const grantTakeOut = url.pathname.match(/^\/api\/copy-grants\/([^/]+)\/take-out$/);
+    if (grantTakeOut && req.method === "POST") {
+      return send(res, 403, { error: "copy_must_stay_in_building", message: "复制件不出馆，任何情况下不得办理出馆" });
+    }
+    // ===== 复制授权台结束 =====
     if (req.method === "POST" && url.pathname === "/api/items") {
       const input = await body(req);
       const item = { id: newId(), ...input, logs: [{ at: new Date().toISOString(), step: "建档", note: "创建底片" }] };

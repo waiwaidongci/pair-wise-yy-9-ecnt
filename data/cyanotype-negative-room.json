@@ -32,5 +32,30 @@
         }
       ]
     }
+  ],
+  "copyGrants": [
+    {
+      "id": "CG-SEED-1",
+      "negativeCode": "CN-001",
+      "customer": "省美术馆",
+      "purpose": "馆藏图录出版",
+      "size": "18x24cm",
+      "deadline": "2026-10-15",
+      "handler": "周明",
+      "box": "蓝盒A-03",
+      "status": "待复制",
+      "rejectReason": "",
+      "reviews": [],
+      "history": [
+        {
+          "at": "2026-09-20T02:00:00.000Z",
+          "action": "登记",
+          "note": "登记用途「馆藏图录出版」，期限至 2026-10-15",
+          "by": "周明"
+        }
+      ],
+      "createdAt": "2026-09-20T02:00:00.000Z",
+      "updatedAt": "2026-09-20T02:00:00.000Z"
+    }
   ]
 }
